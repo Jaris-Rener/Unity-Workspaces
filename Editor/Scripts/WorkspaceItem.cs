@@ -84,6 +84,6 @@
             => AssetDatabase.GUIDToAssetPath(AssetGuid);
 
         public Texture GetIcon()
-            => AssetDatabase.GetCachedIcon(GetPath());
+            => AssetPreview.GetMiniThumbnail(GetObject());
     }
 }
