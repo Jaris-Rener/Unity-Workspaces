@@ -10,64 +10,6 @@ namespace Howl.Workspaces
     using UnityEngine;
     using Object = UnityEngine.Object;
 
-    [Serializable]
-    public class Workspace
-    {
-        public List<WorkspaceItem> Items = new();
-        public string Name;
-
-        public Workspace(string name)
-        {
-            Name = name;
-        }
-    }
-
-    [Serializable]
-    public class WorkspaceItem
-    {
-        [JsonIgnore] public Color Color
-        {
-            get =>
-                ColorUtility.TryParseHtmlString($"#{ColorString}", out var color)
-                    ? color
-                    : Color.white;
-            set => ColorString = ColorUtility.ToHtmlStringRGB(value);
-        }
-
-        public string AssetGuid;
-        public string ColorString;
-        public bool Locked;
-
-        [JsonProperty] private float _positionX;
-        [JsonProperty] private float _positionY;
-        [JsonIgnore] public string Name => GetObject().name;
-
-        [JsonIgnore]
-        public Vector2 Position
-        {
-            get => new(_positionX, _positionY);
-            set
-            {
-                _positionX = value.x;
-                _positionY = value.y;
-            }
-        }
-
-        public bool IsValid => GetObject() != null;
-
-        public Rect GetRect(Vector2 scale) => new(Position, scale);
-        public override string ToString() => Name;
-
-        public Object GetObject()
-            => AssetDatabase.LoadAssetAtPath<Object>(GetPath());
-
-        public string GetPath()
-            => AssetDatabase.GUIDToAssetPath(AssetGuid);
-
-        public Texture GetIcon()
-            => AssetDatabase.GetCachedIcon(GetPath());
-    }
-
     public class WorkspaceWindow : EditorWindow
     {
         private const float _backgroundScale = 4f;
@@ -86,9 +28,10 @@ namespace Howl.Workspaces
         private Vector2 _dragStartPos;
         private WorkspaceItem _hoveredItem;
         private bool _initialized;
-        private bool _utilityWindow = true;
+        private static bool _utilityWindow = false;
         private string[] _workspaceNames;
         private string[] _workspacePaths;
+        private float _itemScaleFactor = 1;
 
         private static string _workspaceDirectory
             => Path.Combine(Application.persistentDataPath, "Workspaces").Replace('/', '\\');
@@ -111,6 +54,11 @@ namespace Howl.Workspaces
             DrawBackground();
             GUI.color = Color.white;
 
+            var val = Mathf.Clamp01((Event.current.mousePosition.y - position.height + 75)/24);
+            GUI.color = Color.Lerp(new Color(1f, 1f, 1f, 0f), Color.white, val);
+            DrawControls();
+            GUI.color = Color.white;
+
             if (_activeWorkspace == null)
             {
                 var width = 192;
@@ -125,14 +73,15 @@ namespace Howl.Workspaces
             else
             {
                 HandleDragAndDrop();
-                HandleItemDrag();
-                DrawAllItems();
+                HandleSelectedItemDrag();
+                DrawItems();
                 HandleSelection();
-                HandleDragSelection();
+                HandleBoxSelection();
 
                 if (_hoveredItem == null && Event.current.type is EventType.MouseDown && Event.current.button == 1)
                 {
                     var menu = new GenericMenu();
+                    menu.AddItem(new GUIContent("Toggle Window Mode"), false, ToggleWindowMode);
                     menu.AddItem(new GUIContent("Sort workspace"), false, SortItems);
                     menu.ShowAsContext();
                 }
@@ -142,7 +91,42 @@ namespace Howl.Workspaces
             DrawStatusBar();
         }
 
-        private void HandleDragSelection()
+        private void DrawItems()
+        {
+            foreach (var item in _activeWorkspace.Items)
+                item.Render(_itemScale, _selectedItems.Contains(item));
+        }
+
+        private void OnEnable()
+        {
+            _itemScaleFactor = PlayerPrefs.GetFloat("ItemScaleFactor", _itemScaleFactor);
+        }
+
+        private void DrawControls()
+        {
+            var sliderHeight = 22;
+            var sizeSliderRect = new Rect(position.width*0.75f, position.size.y - 20 - sliderHeight, position.width*0.4f, sliderHeight);
+            sizeSliderRect.xMax = position.width - 8;
+            var itemScale = GUI.HorizontalSlider(sizeSliderRect, _itemScaleFactor, 0.5f, 1.75f);
+            if (Math.Abs(_itemScaleFactor - itemScale) > 0.0001f)
+            {
+                PlayerPrefs.SetFloat("ItemScaleFactor", itemScale);
+                _itemScaleFactor = itemScale;
+            }
+        }
+
+        private void ToggleWindowMode()
+        {
+            Close();
+            _utilityWindow = !_utilityWindow;
+            var window = GetWindow<WorkspaceWindow>(_utilityWindow, "Workspace");
+            if (_utilityWindow)
+                window.ShowUtility();
+            else
+                window.ShowTab();
+        }
+
+        private void HandleBoxSelection()
         {
             if (_draggingItems)
                 return;
@@ -168,7 +152,7 @@ namespace Howl.Workspaces
                 {
                     foreach (var item in _activeWorkspace.Items)
                     {
-                        if (item.GetRect(_itemPixelScale).Overlaps(_dragSelectRect))
+                        if (item.GetRect(_itemScale).Overlaps(_dragSelectRect))
                         {
                             if (item.Locked)
                                 continue;
@@ -208,14 +192,14 @@ namespace Howl.Workspaces
             const int paddingX = 4;
             const int paddingY = 20;
 
-            int columns = Mathf.FloorToInt((position.width - marginX)/(_itemPixelScale.x + paddingX));
+            int columns = Mathf.FloorToInt((position.width - marginX)/(_itemScale.x + paddingX));
             var layoutItems = _activeWorkspace.Items.Where(x => !x.Locked).ToList();
             for (var i = 0; i < layoutItems.Count; i++)
             {
                 var item = layoutItems[i];
 
-                var x = marginX + i%columns*(_itemPixelScale.x + paddingX);
-                var y = marginY + Mathf.Floor((i - float.Epsilon)/columns)*(_itemPixelScale.y + paddingY);
+                var x = marginX + i%columns*(_itemScale.x + paddingX);
+                var y = marginY + Mathf.Floor((i - float.Epsilon)/columns)*(_itemScale.y + paddingY);
                 item.Position = new Vector2(x, y);
             }
 
@@ -247,14 +231,14 @@ namespace Howl.Workspaces
         private bool IsHovered(WorkspaceItem item)
         {
             var mousePos = Event.current.mousePosition;
-            return item.GetRect(_itemPixelScale).Contains(mousePos);
+            return item.GetRect(_itemScale).Contains(mousePos);
         }
 
         [MenuItem("Tools/Workspace")]
         private static void Init()
         {
-            var window = GetWindow<WorkspaceWindow>(true, "Workspace");
-            window.Show();
+            var window = GetWindow<WorkspaceWindow>(false, "Workspace");
+            window.ShowPopup();
         }
 
         private void DrawToolbar()
@@ -266,7 +250,7 @@ namespace Howl.Workspaces
 
             // Select workspace
             var popupRect = new Rect(rect);
-            popupRect.xMin = rect.xMax - 130;
+            popupRect.xMin = rect.xMax - 200;
             popupRect.xMax -= 2;
             popupRect.yMin += 2;
             var index = EditorGUI.Popup(popupRect, _activeWorkspaceIndex, _workspaceNames, "DropDownButton");
@@ -352,43 +336,9 @@ namespace Howl.Workspaces
             if (_activeWorkspace.Items == null)
                 return;
 
-            foreach (var obj in _activeWorkspace.Items)
-            {
-                DrawItem(obj);
-            }
         }
 
-        private void DrawItem(WorkspaceItem item)
-        {
-            if (!item.IsValid)
-                return;
-
-            var selected = _selectedItems.Contains(item);
-            var icon = item.GetIcon();
-
-            var boxRect = new Rect(item.Position, _itemPixelScale);
-            GUI.color = item.Color;
-            GUI.Box(boxRect, GUIContent.none, selected ? "TE NodeBoxSelected" : "TE NodeBox");
-            GUI.color = Color.white;
-
-            var padding = new Vector2(8, 8);
-            var textureRect = new Rect(boxRect);
-            textureRect.size -= padding*2;
-            textureRect.position += padding;
-            GUI.DrawTexture(textureRect, icon);
-
-            if (item.Locked)
-            {
-                var iconSize = 15;
-                var rect = new Rect(boxRect.xMax - iconSize*0.75f, boxRect.y - iconSize*0.25f, iconSize, iconSize);
-                GUI.DrawTexture(rect, EditorGUIUtility.FindTexture("d_AssemblyLock"), ScaleMode.ScaleToFit);
-            }
-
-            var labelRect = new Rect(boxRect);
-            labelRect.height = EditorGUIUtility.singleLineHeight;
-            labelRect.y = boxRect.yMax;
-            GUI.Label(labelRect, item.Name);
-        }
+        private Vector2 _itemScale => _itemScaleFactor*_itemPixelScale;
 
         private void HandleSelection(WorkspaceItem item)
         {
@@ -499,7 +449,7 @@ namespace Howl.Workspaces
             SaveWorkspace(_activeWorkspace);
         }
 
-        private void HandleItemDrag()
+        private void HandleSelectedItemDrag()
         {
             var eventType = Event.current.type;
             if (eventType is EventType.MouseDown && _hoveredItem != null)
@@ -527,6 +477,9 @@ namespace Howl.Workspaces
         private static float RoundTo(float value, float multipleOf)
             => Mathf.Round(value/multipleOf)*multipleOf;
 
+        /// <summary>
+        /// Handles the drag and drop behaviour for adding assets to the workspace
+        /// </summary>
         private void HandleDragAndDrop()
         {
             var eventType = Event.current.type;
@@ -548,7 +501,7 @@ namespace Howl.Workspaces
                         continue;
 
                     const int offset = 4;
-                    var size = Vector2.one*_itemPixelScale;
+                    var size = Vector2.one*_itemScale;
                     var pos = Event.current.mousePosition + Vector2.one*i*offset;
                     pos -= size/2f;
                     _activeWorkspace.Items.Add(new WorkspaceItem
