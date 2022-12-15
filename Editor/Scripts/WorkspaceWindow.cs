@@ -89,6 +89,32 @@ namespace Howl.Workspaces
 
             DrawToolbar();
             DrawStatusBar();
+
+            HandleHotkeys();
+        }
+
+        private void HandleHotkeys()
+        {
+            if (Event.current.type is EventType.KeyDown)
+            {
+                switch (Event.current.keyCode)
+                {
+                    case KeyCode.Delete:
+                        RemoveItems(_selectedItems);
+                        _selectedItems.Clear();
+                        break;
+                }
+            }
+        }
+
+        private void RemoveItems(List<WorkspaceItem> items)
+        {
+            foreach (var item in items)
+            {
+                _activeWorkspace.Items.Remove(item);
+            }
+
+            SaveWorkspace(_activeWorkspace);
         }
 
         private void DrawItems()
