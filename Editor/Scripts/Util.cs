@@ -14,5 +14,23 @@
 
             return rect;
         }
+
+        public static Rect AddPadding(this Rect rect, float padding)
+        {
+            rect.x += padding;
+            rect.y += padding;
+            rect.width -= padding*2f;
+            rect.height -= padding*2f;
+            return rect;
+        }
+
+        public static Rect AddPadding(this Rect rect, Vector4 padding)
+        {
+            rect.x += padding.x;
+            rect.y += padding.y;
+            rect.width -= padding.x + padding.z;
+            rect.height -= padding.y + padding.w;
+            return rect;
+        }
     }
 }

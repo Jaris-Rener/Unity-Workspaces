@@ -4,18 +4,18 @@ namespace Howl.Workspaces
     using System.Collections.Generic;
     using System.IO;
     using System.Linq;
-    using System.Reflection;
     using Newtonsoft.Json;
     using UnityEditor;
     using UnityEngine;
     using Object = UnityEngine.Object;
+    using Random = UnityEngine.Random;
 
     public class WorkspaceWindow : EditorWindow
     {
         private const float _backgroundScale = 4f;
         private const string _fileExtension = ".wspace";
 
-        private readonly Vector2 _itemPixelScale = Vector2.one*64;
+        private static readonly Vector2 _itemPixelScale = Vector2.one*64;
 
         private readonly List<WorkspaceItem> _selectedItems = new();
         private Workspace _activeWorkspace;
@@ -28,10 +28,12 @@ namespace Howl.Workspaces
         private Vector2 _dragStartPos;
         private WorkspaceItem _hoveredItem;
         private bool _initialized;
-        private static bool _utilityWindow = false;
+        private static bool _utilityWindow;
         private string[] _workspaceNames;
         private string[] _workspacePaths;
-        private float _itemScaleFactor = 1;
+        private static float _itemScaleFactor = 1;
+
+        private Rect _safeZone => new(8, 8, position.width - 16, position.height - _toolbarRect.height - 16);
 
         private static string _workspaceDirectory
             => Path.Combine(Application.persistentDataPath, "Workspaces").Replace('/', '\\');
@@ -64,33 +66,68 @@ namespace Howl.Workspaces
                 var width = 192;
                 var height = 64;
                 var rect = new Rect(position.width/2f - width/2f, position.height/2f - height/2f, width, height);
-                if (GUI.Button(rect,
-                        new GUIContent("New Workspace", EditorGUIUtility.FindTexture("d_CreateAddNew@2x"))))
+                if (GUI.Button(rect, new GUIContent("New Workspace", EditorGUIUtility.FindTexture("d_CreateAddNew@2x"))))
                 {
                     NewWorkspacePopup();
                 }
-            }
-            else
-            {
-                HandleDragAndDrop();
-                HandleSelectedItemDrag();
-                DrawItems();
-                HandleSelection();
-                HandleBoxSelection();
 
-                if (_hoveredItem == null && Event.current.type is EventType.MouseDown && Event.current.button == 1)
-                {
-                    var menu = new GenericMenu();
-                    menu.AddItem(new GUIContent("Toggle Window Mode"), false, ToggleWindowMode);
-                    menu.AddItem(new GUIContent("Sort workspace"), false, SortItems);
-                    menu.ShowAsContext();
-                }
+                EditorGUIUtility.AddCursorRect(rect, MouseCursor.ArrowPlus);
+                return;
+            }
+
+            _activeWorkspace.Items ??= new();
+            HandleDragAndDropAssets();
+            HandleSelectedItemDrag();
+            DrawItems();
+            HandleSelection();
+            HandleBoxSelection();
+
+            if (_hoveredItem == null && Event.current.type is EventType.MouseDown && Event.current.button == 1)
+            {
+                var menu = new GenericMenu();
+                var pos = Event.current.mousePosition;
+                menu.AddItem(new GUIContent("Add asset..."), false, () => AddAssetPopup(pos));
+                menu.AddItem(new GUIContent("Toggle Window Mode"), false, ToggleWindowMode);
+                menu.AddItem(new GUIContent("Sort workspace"), false, SortUngroupedItems);
+                menu.ShowAsContext();
             }
 
             DrawToolbar();
-            DrawStatusBar();
 
+            HandleObjectPicker();
             HandleHotkeys();
+        }
+
+        private void HandleObjectPicker()
+        {
+            if (Event.current.commandName == "ObjectSelectorClosed" &&
+                EditorGUIUtility.GetObjectPickerControlID() == _curObjectPickerWindow)
+            {
+                var obj = EditorGUIUtility.GetObjectPickerObject();
+                if (!AssetDatabase.TryGetGUIDAndLocalFileIdentifier(obj, out var guid, out long _))
+                    return;
+
+                if (_activeWorkspace.ContainsAsset(guid))
+                    return;
+
+                var size = Vector2.one*ItemScale;
+                _addPosition -= size/2f;
+                _activeWorkspace.Items.Add(new WorkspaceAsset
+                {
+                    Position = _addPosition,
+                    AssetGuid = guid
+                });
+            }
+        }
+
+        private int _curObjectPickerWindow;
+        private Vector2 _addPosition;
+
+        private void AddAssetPopup(Vector2 pos)
+        {
+            _addPosition = pos;
+            _curObjectPickerWindow = GUIUtility.GetControlID(FocusType.Passive) + 100;
+            EditorGUIUtility.ShowObjectPicker<Object>(null, false, string.Empty, _curObjectPickerWindow);
         }
 
         private void HandleHotkeys()
@@ -103,6 +140,16 @@ namespace Howl.Workspaces
                         RemoveItems(_selectedItems);
                         _selectedItems.Clear();
                         break;
+                    case KeyCode.C:
+                        _activeWorkspace.Items.Add(new WorkspaceGroup
+                        {
+                            Position = Event.current.mousePosition,
+                            Color = Color.HSVToRGB(Random.value, 1, 1)
+                        });
+                        break;
+                    case KeyCode.S when Event.current.control:
+                        SaveWorkspace(_activeWorkspace);
+                        break;
                 }
             }
         }
@@ -114,13 +161,16 @@ namespace Howl.Workspaces
                 _activeWorkspace.Items.Remove(item);
             }
 
-            SaveWorkspace(_activeWorkspace);
+            _activeWorkspace.SetDirty();
         }
 
         private void DrawItems()
         {
-            foreach (var item in _activeWorkspace.Items)
-                item.Render(_itemScale, _selectedItems.Contains(item));
+            if (_activeWorkspace.Items == null)
+                return;
+
+            foreach (var item in _activeWorkspace.Items.OrderBy(x => x.RenderLayer))
+                item.Render(_activeWorkspace, ItemScale, _selectedItems.Contains(item), _skin);
         }
 
         private void OnEnable()
@@ -131,7 +181,7 @@ namespace Howl.Workspaces
         private void DrawControls()
         {
             var sliderHeight = 22;
-            var sizeSliderRect = new Rect(position.width*0.75f, position.size.y - 20 - sliderHeight, position.width*0.4f, sliderHeight);
+            var sizeSliderRect = new Rect(position.width - 128, position.size.y - 20 - sliderHeight, 0, sliderHeight);
             sizeSliderRect.xMax = position.width - 8;
             var itemScale = GUI.HorizontalSlider(sizeSliderRect, _itemScaleFactor, 0.5f, 1.75f);
             if (Math.Abs(_itemScaleFactor - itemScale) > 0.0001f)
@@ -152,6 +202,7 @@ namespace Howl.Workspaces
                 window.ShowTab();
         }
 
+        private bool _dragStarted;
         private void HandleBoxSelection()
         {
             if (_draggingItems)
@@ -159,15 +210,17 @@ namespace Howl.Workspaces
 
             if (Event.current.type is EventType.MouseDown && _hoveredItem == null)
             {
+                _dragStarted = true;
                 _dragStartPos = Event.current.mousePosition;
             }
 
             if (Event.current.type is EventType.MouseUp)
             {
                 _dragSelecting = false;
+                _dragStarted = false;
             }
 
-            if (Event.current.type is EventType.MouseDrag)
+            if (_dragStarted && Event.current.type is EventType.MouseDrag)
             {
                 if (Vector2.Distance(Event.current.mousePosition, _dragStartPos) > 10f)
                 {
@@ -178,7 +231,7 @@ namespace Howl.Workspaces
                 {
                     foreach (var item in _activeWorkspace.Items)
                     {
-                        if (item.GetRect(_itemScale).Overlaps(_dragSelectRect))
+                        if (item.GetRect(ItemScale).Overlaps(_dragSelectRect))
                         {
                             if (item.Locked)
                                 continue;
@@ -199,53 +252,32 @@ namespace Howl.Workspaces
                 GUI.Box(_dragSelectRect, GUIContent.none, "SelectionRect");
         }
 
-        private void SortItems()
+        private void SortUngroupedItems()
         {
-            _activeWorkspace.Items.RemoveAll(x => !x.IsValid);
-            _activeWorkspace.Items = _activeWorkspace.Items
-                .OrderBy(GetItemTypeName)
-                .ThenBy(x => x.Name)
-                .ToList();
+            var items = _activeWorkspace.GetWorkspaceAssets()
+                .Where(x => x.IsValid && !x.Locked)
+                .Where(x => x.ParentGroup == null)
+                .OrderBy(x => x.GetTypeName())
+                .ThenBy(x => x.GetName())
+                .ToArray();
 
-            string GetItemTypeName(WorkspaceItem x)
-            {
-                var asset = AssetDatabase.LoadAssetAtPath<Object>(x.GetPath());
-                return asset.GetType().Name;
-            }
-
-            const int marginX = 8;
-            const int marginY = 32;
-            const int paddingX = 4;
-            const int paddingY = 20;
-
-            int columns = Mathf.FloorToInt((position.width - marginX)/(_itemScale.x + paddingX));
-            var layoutItems = _activeWorkspace.Items.Where(x => !x.Locked).ToList();
-            for (var i = 0; i < layoutItems.Count; i++)
-            {
-                var item = layoutItems[i];
-
-                var x = marginX + i%columns*(_itemScale.x + paddingX);
-                var y = marginY + Mathf.Floor((i - float.Epsilon)/columns)*(_itemScale.y + paddingY);
-                item.Position = new Vector2(x, y);
-            }
-
-            SaveWorkspace(_activeWorkspace);
+            _activeWorkspace.LayoutItems(_safeZone, ItemScale, items);
         }
 
         private void HandleSelection()
         {
             bool hovered = false;
-            for (var i = _activeWorkspace.Items.Count - 1; i >= 0; i--)
+            foreach (var item in _activeWorkspace.Items.OrderBy(x => x.RenderLayer))
             {
-                var item = _activeWorkspace.Items[i];
-                if (IsHovered(item))
-                {
-                    hovered = true;
-                    _hoveredItem = item;
-                }
+                if (!IsHovered(item))
+                    continue;
 
-                HandleSelection(item);
+                hovered = true;
+                _hoveredItem = item;
             }
+
+            if (_hoveredItem != null)
+                HandleSelection(_hoveredItem);
 
             if (!hovered)
                 _hoveredItem = null;
@@ -257,33 +289,14 @@ namespace Howl.Workspaces
         private bool IsHovered(WorkspaceItem item)
         {
             var mousePos = Event.current.mousePosition;
-            return item.GetRect(_itemScale).Contains(mousePos);
+            return item.GetRect(ItemScale).Contains(mousePos);
         }
 
-        [MenuItem("Tools/Workspace")]
+        [MenuItem("Tools/Workspace ^#w")]
         private static void Init()
         {
             var window = GetWindow<WorkspaceWindow>(false, "Workspace");
             window.ShowPopup();
-        }
-
-        private void DrawToolbar()
-        {
-            const int toolbarHeight = 22;
-            const int toolbarPadding = 4;
-            var rect = new Rect(toolbarPadding, toolbarPadding, position.width - toolbarPadding*2, toolbarHeight);
-            GUI.Box(rect, GUIContent.none, "FrameBox");
-
-            // Select workspace
-            var popupRect = new Rect(rect);
-            popupRect.xMin = rect.xMax - 200;
-            popupRect.xMax -= 2;
-            popupRect.yMin += 2;
-            var index = EditorGUI.Popup(popupRect, _activeWorkspaceIndex, _workspaceNames, "DropDownButton");
-            if (index != _activeWorkspaceIndex)
-            {
-                LoadWorkspace(_workspacePaths[index]);
-            }
         }
 
         private void NewWorkspacePopup()
@@ -295,22 +308,36 @@ namespace Howl.Workspaces
 
         private void NewWorkspace(string workspaceName)
         {
-            SaveWorkspace(_activeWorkspace);
+            if (_activeWorkspace.IsDirty)
+            {
+                var dialogResult = EditorUtility.DisplayDialogComplex("Save Current Workspace", "Do you want to save the changes you made before switching workspace?", "Save", "Cancel", "No");
+                switch (dialogResult)
+                {
+                    case 0:
+                        SaveWorkspace(_activeWorkspace);
+                        break;
+                    case 1:
+                        return;
+                    case 2:
+                        break;
+                }
+            }
+
             var workspace = new Workspace(workspaceName);
             SaveWorkspace(workspace);
             SetActiveWorkspace(workspace);
         }
 
-        private void DrawStatusBar()
+        private const int _toolbarHeight = 22;
+        private Rect _toolbarRect => new(0, position.size.y - _toolbarHeight + 2, position.width, _toolbarHeight);
+        private void DrawToolbar()
         {
-            const int statusBarHeight = 22;
-            var rect = new Rect(0, position.size.y - statusBarHeight + 2, position.width, statusBarHeight);
-            GUI.Box(rect, GUIContent.none, "Toolbar");
+            GUI.Box(_toolbarRect, GUIContent.none, "Toolbar");
 
-            if (_hoveredItem != null)
-                GUI.Label(rect, new GUIContent(_hoveredItem.GetPath(), _hoveredItem.GetIcon()));
+            if (_hoveredItem is WorkspaceAsset asset)
+                GUI.Label(_toolbarRect, new GUIContent(asset.GetPath(), asset.GetIcon()));
 
-            var buttonRect = new Rect(rect);
+            var buttonRect = new Rect(_toolbarRect);
             var buttonWidth = 24;
             buttonRect.xMin = buttonRect.xMax - buttonWidth;
             buttonRect.width = buttonWidth;
@@ -324,6 +351,38 @@ namespace Howl.Workspaces
             {
                 NewWorkspacePopup();
             }
+
+            EditorGUIUtility.AddCursorRect(buttonRect, MouseCursor.ArrowPlus);
+
+            var popupWidth = 200;
+            var popupRect = new Rect(buttonRect);
+            popupRect.width = popupWidth;
+            popupRect.x -= popupWidth;
+            GUI.contentColor = _activeWorkspace.IsDirty ? new Color(1f, 0.75f, 0f) : Color.white;
+            var index = EditorGUI.Popup(popupRect, _activeWorkspaceIndex, _workspaceNames, "ToolbarPopup");
+            GUI.contentColor = Color.white;
+            if (index != _activeWorkspaceIndex)
+            {
+                LoadWorkspace(_workspacePaths[index]);
+            }
+
+            var refreshRect = new Rect(popupRect);
+            refreshRect.width = buttonWidth;
+            refreshRect.x -= buttonWidth;
+            if (GUI.Button(refreshRect, new GUIContent(EditorGUIUtility.FindTexture("d_Refresh"), "Reload Workspace"), "toolbarbutton"))
+            {
+                LoadWorkspace(GetWorkspaceFilePath(_activeWorkspace));
+            }
+
+            var sortRect = new Rect(refreshRect);
+            sortRect.width = buttonWidth;
+            sortRect.x -= buttonWidth;
+            if (GUI.Button(sortRect, new GUIContent(EditorGUIUtility.FindTexture("d_GridLayoutGroup Icon"), "Sort Workspace"),
+                    "toolbarbutton"))
+            {
+                SortUngroupedItems();
+            }
+
         }
 
         private void DrawBackground()
@@ -333,9 +392,17 @@ namespace Howl.Workspaces
                 new Rect(Vector2.zero, new Vector2(position.size.x, -position.size.y)*_backgroundScale*0.01f));
         }
 
+        private GUISkin _skin;
+        private readonly JsonSerializerSettings _jsonSerializerSettings = new()
+        {
+            TypeNameHandling = TypeNameHandling.All,
+            PreserveReferencesHandling = PreserveReferencesHandling.Objects
+        };
+
         private void Initialize()
         {
-            _backgroundTexture = Resources.Load<Texture2D>("Textures/workspace_background");
+            _skin = Resources.Load<GUISkin>("Miscellaneous/WorkspaceGUISkin");
+            _backgroundTexture = Resources.Load<Texture2D>("Textures/WorkspaceBackground");
             ReloadSavedWorkspaces();
             if (_workspacePaths.Length > 0)
                 LoadWorkspace(_workspacePaths[0]);
@@ -357,14 +424,7 @@ namespace Howl.Workspaces
             }
         }
 
-        private void DrawAllItems()
-        {
-            if (_activeWorkspace.Items == null)
-                return;
-
-        }
-
-        private Vector2 _itemScale => _itemScaleFactor*_itemPixelScale;
+        public static Vector2 ItemScale => _itemScaleFactor*_itemPixelScale;
 
         private void HandleSelection(WorkspaceItem item)
         {
@@ -373,106 +433,47 @@ namespace Howl.Workspaces
             if (!IsHovered(item))
                 return;
 
-            if (eventType is not EventType.MouseDown)
-                return;
-
-            // Right-click context menu
-            if (@event.button == 1)
+            if (eventType is EventType.MouseDown)
             {
-                var menu = new GenericMenu();
-                if (item.Locked)
-                    menu.AddItem(new GUIContent("Unlock Item"), true, () => UnlockItem(item));
-                else
-                    menu.AddItem(new GUIContent("Lock Item"), false, () => LockItem(item));
+                if (@event.button == 1)
+                {
+                    var menu = item.GetGenericMenu(_activeWorkspace);
+                    menu.ShowAsContext();
+                    return;
+                }
 
-                menu.AddItem(new GUIContent("Remove from workspace"), false, () => RemoveItem(item));
-                menu.AddItem(new GUIContent("Locate asset"), false,
-                    () => EditorGUIUtility.PingObject(item.GetObject()));
-                menu.AddItem(new GUIContent("Open asset"), false, () => AssetDatabase.OpenAsset(item.GetObject()));
-                menu.AddItem(new GUIContent("Set color/Red"), false, () => SetItemColor(item, Color.red));
-                menu.AddItem(new GUIContent("Set color/Orange"), false, () => SetItemColor(item, new Color(1f, 0.5f, 0f)));
-                menu.AddItem(new GUIContent("Set color/Yellow"), false, () => SetItemColor(item, Color.yellow));
-                menu.AddItem(new GUIContent("Set color/Green"), false, () => SetItemColor(item, Color.green));
-                menu.AddItem(new GUIContent("Set color/Blue"), false, () => SetItemColor(item, new Color(0f, 0.5f, 1f)));
-                menu.AddItem(new GUIContent("Set color/Pink"), false, () => SetItemColor(item, new Color(1f, 0.5f, 1f)));
-                menu.ShowAsContext();
-                return;
+                // Double-click to open
+                if (@event.clickCount == 2)
+                {
+                    item.OnDoubleClick();
+                    return;
+                }
+
+                if (@event.control)
+                {
+                    item.OnCtrlClick();
+                    return;
+                }
+
+                if (_selectedItems.Contains(item))
+                {
+                    if (@event.shift)
+                        _selectedItems.Remove(item);
+
+                    return;
+                }
+
+                if (!@event.shift)
+                    _selectedItems.Clear();
+
+                _selectedItems.Add(item);
+
+                // Bring to front
+                _activeWorkspace.Items.Remove(item);
+                _activeWorkspace.Items.Add(item);
+
+                @event.Use();
             }
-
-            // Double-click to open
-            if (@event.clickCount == 2)
-            {
-                AssetDatabase.OpenAsset(item.GetObject());
-                return;
-            }
-
-            // Ctrl+click to locate
-            if (@event.control)
-            {
-                EditorGUIUtility.PingObject(item.GetObject());
-                return;
-            }
-
-            if (_selectedItems.Contains(item))
-                return;
-
-            if (!@event.shift)
-                _selectedItems.Clear();
-
-            if (item.Locked)
-                return;
-
-            _selectedItems.Add(item);
-            _activeWorkspace.Items.Remove(item);
-            _activeWorkspace.Items.Add(item);
-            @event.Use();
-        }
-
-        private void LockItem(WorkspaceItem item)
-        {
-            item.Locked = true;
-            SaveWorkspace(_activeWorkspace);
-        }
-
-        private void UnlockItem(WorkspaceItem item)
-        {
-            item.Locked = false;
-            SaveWorkspace(_activeWorkspace);
-        }
-
-        private void SetItemColor(WorkspaceItem item, Color color)
-        {
-            item.Color = color;
-            SaveWorkspace(_activeWorkspace);
-        }
-
-        private void PickItemColor(WorkspaceItem item)
-        {
-            var colorPickerType = Assembly.GetAssembly(typeof(EditorWindow)).GetTypes()
-                .FirstOrDefault(x => x.Name == "ColorPicker");
-
-            if (colorPickerType == null)
-                return;
-
-            var showColorPicker = colorPickerType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(x => x.Name == "Show" && x.GetParameters()[0].Name == "colorChangedCallback");
-
-            if (showColorPicker == null)
-                return;
-
-            showColorPicker.Invoke(null, new object[] { (Action<Color>)SetColor, item.Color, false, false });
-
-            void SetColor(Color color)
-            {
-                item.Color = color;
-                SaveWorkspace(_activeWorkspace);
-            }
-        }
-
-        private void RemoveItem(WorkspaceItem item)
-        {
-            _activeWorkspace.Items.Remove(item);
-            SaveWorkspace(_activeWorkspace);
         }
 
         private void HandleSelectedItemDrag()
@@ -480,7 +481,10 @@ namespace Howl.Workspaces
             var eventType = Event.current.type;
             if (eventType is EventType.MouseDown && _hoveredItem != null)
             {
-                _draggingItems = true;
+                if (_hoveredItem.GetDragRect(ItemScale).Contains(Event.current.mousePosition))
+                {
+                    _draggingItems = true;
+                }
             }
 
             if (!_draggingItems)
@@ -488,25 +492,53 @@ namespace Howl.Workspaces
 
             if (eventType is EventType.MouseDrag)
             {
-                foreach (var selectedItem in _selectedItems.Where(x => !x.Locked))
+                var dragItems = _selectedItems.Where(x => !x.Locked);
+                foreach (var dragItem in dragItems)
                 {
-                    selectedItem.Position += Event.current.delta;
+                    if (dragItem is WorkspaceGroup group)
+                        foreach (var item in _activeWorkspace.Items.Where(x => x.ParentGroup == group))
+                            item.Position += Event.current.delta;
+
+                    dragItem.Position += Event.current.delta;
                 }
             }
             else if (eventType is EventType.MouseUp)
             {
+                if (_selectedItems.Count <= 0)
+                {
+                    _draggingItems = false;
+                    return;
+                }
+
+                var workspaceGroups = _activeWorkspace.Items.OfType<WorkspaceGroup>().ToList();
+                foreach (var item in _selectedItems)
+                {
+                    SetParentGroup(item);
+                }
+
+                void SetParentGroup(WorkspaceItem item)
+                {
+                    foreach (var group in workspaceGroups)
+                    {
+                        if (!group.Rect.Contains(item.GetRect(ItemScale).center))
+                            continue;
+
+                        item.ParentGroup = group;
+                        return;
+                    }
+
+                    item.ParentGroup = null;
+                }
+
                 _draggingItems = false;
-                SaveWorkspace(_activeWorkspace);
+                _activeWorkspace.SetDirty();
             }
         }
-
-        private static float RoundTo(float value, float multipleOf)
-            => Mathf.Round(value/multipleOf)*multipleOf;
 
         /// <summary>
         /// Handles the drag and drop behaviour for adding assets to the workspace
         /// </summary>
-        private void HandleDragAndDrop()
+        private void HandleDragAndDropAssets()
         {
             var eventType = Event.current.type;
             if (eventType is not (EventType.DragUpdated or EventType.DragPerform))
@@ -523,14 +555,14 @@ namespace Howl.Workspaces
                     if (!AssetDatabase.TryGetGUIDAndLocalFileIdentifier(item, out var guid, out long _))
                         continue;
 
-                    if (_activeWorkspace.Items.Any(x => x.AssetGuid == guid))
+                    if (_activeWorkspace.ContainsAsset(guid))
                         continue;
 
                     const int offset = 4;
-                    var size = Vector2.one*_itemScale;
+                    var size = Vector2.one*ItemScale;
                     var pos = Event.current.mousePosition + Vector2.one*i*offset;
                     pos -= size/2f;
-                    _activeWorkspace.Items.Add(new WorkspaceItem
+                    _activeWorkspace.Items.Add(new WorkspaceAsset
                     {
                         Position = pos,
                         AssetGuid = guid
@@ -539,7 +571,7 @@ namespace Howl.Workspaces
 
                 if (DragAndDrop.objectReferences.Length > 0)
                 {
-                    SaveWorkspace(_activeWorkspace);
+                    _activeWorkspace.SetDirty();
                 }
             }
 
@@ -557,8 +589,23 @@ namespace Howl.Workspaces
                 return;
             }
 
+            if (_activeWorkspace is { IsDirty: true })
+            {
+                var dialogResult = EditorUtility.DisplayDialogComplex("Save Current Workspace", "Do you want to save the changes you made before switching workspace?", "Save", "Cancel", "No");
+                switch (dialogResult)
+                {
+                    case 0:
+                        SaveWorkspace(_activeWorkspace);
+                        break;
+                    case 1:
+                        return;
+                    case 2:
+                        break;
+                }
+            }
+
             var json = File.ReadAllText(filePath);
-            var workspace = JsonConvert.DeserializeObject<Workspace>(json);
+            var workspace = JsonConvert.DeserializeObject<Workspace>(json, _jsonSerializerSettings);
             SetActiveWorkspace(workspace);
         }
 
@@ -568,7 +615,7 @@ namespace Howl.Workspaces
             _activeWorkspace = workspace;
             var workspaceIndex = Array.IndexOf(_workspacePaths, GetWorkspaceFilePath(workspace));
             _activeWorkspaceIndex = workspaceIndex;
-            titleContent.text = $"Workspace - {workspace.Name}";
+            titleContent.text = $"{workspace.Name} (Workspace)";
         }
 
         private static string GetWorkspaceFilePath(Workspace workspace)
@@ -579,7 +626,7 @@ namespace Howl.Workspaces
             foreach (char ch in Path.GetInvalidFileNameChars())
                 input = input.Replace(ch, '_');
 
-            return input.ToLower();
+            return input;
         }
 
         private void SaveWorkspace(Workspace workspace)
@@ -591,8 +638,9 @@ namespace Howl.Workspaces
                 Directory.CreateDirectory(_workspaceDirectory);
 
             var filePath = GetWorkspaceFilePath(workspace);
-            var json = JsonConvert.SerializeObject(workspace);
+            var json = JsonConvert.SerializeObject(workspace, _jsonSerializerSettings);
             File.WriteAllText(filePath, json);
+            workspace.IsDirty = false;
         }
     }
 }
