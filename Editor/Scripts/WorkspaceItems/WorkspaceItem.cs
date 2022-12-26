@@ -52,7 +52,8 @@
             }
         }
 
-        public virtual int RenderLayer => 0;
+        [JsonIgnore] public virtual int RenderLayer => 0;
+        [JsonIgnore] public virtual GUIContent ToolbarContent => GUIContent.none;
 
         public virtual Rect GetRect(Vector2 scale) => new(Position, scale);
         public virtual Rect GetDragRect(Vector2 scale) => new(Position, scale);

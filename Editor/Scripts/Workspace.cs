@@ -42,6 +42,12 @@
             workspace.SetDirty();
         }
 
+        public static void RenameItem(this Workspace workspace, WorkspaceHyperlink link, string name)
+        {
+            link.Name = name;
+            workspace.SetDirty();
+        }
+
         public static void SetItemColor(this Workspace workspace, WorkspaceItem item, Color color)
         {
             item.Color = color;

@@ -10,6 +10,12 @@ namespace Howl.Workspaces
     using Object = UnityEngine.Object;
     using Random = UnityEngine.Random;
 
+    public struct WorkspaceNotification
+    {
+        public double CreationTime;
+        public string Message;
+    }
+
     public class WorkspaceWindow : EditorWindow
     {
         private const float _backgroundScale = 4f;
@@ -34,6 +40,7 @@ namespace Howl.Workspaces
         private static float _itemScaleFactor = 1;
 
         private Rect _safeZone => new(8, 8, position.width - 16, position.height - _toolbarRect.height - 16);
+        private Rect _notificationArea => new (_safeZone);
 
         private static string _workspaceDirectory
             => Path.Combine(Application.persistentDataPath, "Workspaces").Replace('/', '\\');
@@ -87,15 +94,71 @@ namespace Howl.Workspaces
                 var menu = new GenericMenu();
                 var pos = Event.current.mousePosition;
                 menu.AddItem(new GUIContent("Add asset..."), false, () => AddAssetPopup(pos));
+                menu.AddItem(new GUIContent("Add hyperlink..."), false, () => AddLinkPopup(pos));
                 menu.AddItem(new GUIContent("Toggle Window Mode"), false, ToggleWindowMode);
                 menu.AddItem(new GUIContent("Sort workspace"), false, SortUngroupedItems);
                 menu.ShowAsContext();
             }
 
             DrawToolbar();
+            DrawNotifications();
 
             HandleObjectPicker();
             HandleHotkeys();
+        }
+
+        private void AddLinkPopup(Vector2 pos)
+        {
+            var input = TextInputModal.GetWindow("Add Hyperlink", "URL", "Add", "Cancel");
+            input.OnSubmit(s => AddLink(s, pos));
+            input.ShowModalUtility();
+        }
+
+        private void AddLink(string url, Vector2 pos)
+        {
+            var link = new WorkspaceHyperlink
+            {
+                Link = new Uri(url),
+                Position = pos
+            };
+
+            _activeWorkspace.Items.Add(link);
+        }
+
+        private readonly List<WorkspaceNotification> _notifications = new();
+        private const float _notificationDuration = 3f;
+        private const float _fadeTime = 0.35f;
+        private void DrawNotifications()
+        {
+            GUILayout.BeginArea(_notificationArea);
+            GUILayout.FlexibleSpace();
+            for (var i = _notifications.Count - 1; i >= 0; i--)
+            {
+                var notification = _notifications[i];
+                var lifetime = EditorApplication.timeSinceStartup - notification.CreationTime;
+                if (lifetime > _notificationDuration - _fadeTime)
+                {
+                    var x = lifetime - _notificationDuration + _fadeTime;
+                    var f = (float)(x/_fadeTime); // 0 - 1 linear
+                    GUI.color = Color.Lerp(Color.white, new Color(1, 1, 1, 0), f);
+                }
+
+                GUILayout.Label(notification.Message, _skin.GetStyle("Notification"));
+                GUI.color = Color.white;
+
+                if (lifetime > _notificationDuration)
+                    _notifications.Remove(notification);
+            }
+
+            GUILayout.EndArea();
+        }
+
+        public void PushNotification(string message)
+        {
+            var notification = new WorkspaceNotification();
+            notification.Message = message;
+            notification.CreationTime = EditorApplication.timeSinceStartup;
+            _notifications.Add(notification);
         }
 
         private void HandleObjectPicker()
@@ -262,6 +325,7 @@ namespace Howl.Workspaces
                 .ToArray();
 
             _activeWorkspace.LayoutItems(_safeZone, ItemScale, items);
+            PushNotification("Sorted workspace items");
         }
 
         private void HandleSelection()
@@ -334,8 +398,8 @@ namespace Howl.Workspaces
         {
             GUI.Box(_toolbarRect, GUIContent.none, "Toolbar");
 
-            if (_hoveredItem is WorkspaceAsset asset)
-                GUI.Label(_toolbarRect, new GUIContent(asset.GetPath(), asset.GetIcon()));
+            if (_hoveredItem != null)
+                GUI.Label(_toolbarRect, _hoveredItem.ToolbarContent);
 
             var buttonRect = new Rect(_toolbarRect);
             var buttonWidth = 24;
@@ -359,7 +423,11 @@ namespace Howl.Workspaces
             popupRect.width = popupWidth;
             popupRect.x -= popupWidth;
             GUI.contentColor = _activeWorkspace.IsDirty ? new Color(1f, 0.75f, 0f) : Color.white;
-            var index = EditorGUI.Popup(popupRect, _activeWorkspaceIndex, _workspaceNames, "ToolbarPopup");
+            var names = _workspaceNames.ToArray();
+            if(_activeWorkspace.IsDirty)
+                names[_activeWorkspaceIndex] = $"{names[_activeWorkspaceIndex]} *";
+
+            var index = EditorGUI.Popup(popupRect, _activeWorkspaceIndex, names, "ToolbarPopup");
             GUI.contentColor = Color.white;
             if (index != _activeWorkspaceIndex)
             {
@@ -607,6 +675,7 @@ namespace Howl.Workspaces
             var json = File.ReadAllText(filePath);
             var workspace = JsonConvert.DeserializeObject<Workspace>(json, _jsonSerializerSettings);
             SetActiveWorkspace(workspace);
+            PushNotification($"Opened workspace: {workspace.Name}");
         }
 
         private void SetActiveWorkspace(Workspace workspace)
@@ -641,6 +710,7 @@ namespace Howl.Workspaces
             var json = JsonConvert.SerializeObject(workspace, _jsonSerializerSettings);
             File.WriteAllText(filePath, json);
             workspace.IsDirty = false;
+            PushNotification($"Saved workspace: {workspace.Name}");
         }
     }
 }

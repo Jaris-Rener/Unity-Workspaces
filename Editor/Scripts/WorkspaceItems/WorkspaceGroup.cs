@@ -64,9 +64,9 @@
         {
             var menu = new GenericMenu();
             if (Locked)
-                menu.AddItem(new GUIContent("Unlock Item"), true, () => workspace.SetItemLock(this, false));
+                menu.AddItem(new GUIContent("Unlock Group"), true, () => workspace.SetItemLock(this, false));
             else
-                menu.AddItem(new GUIContent("Lock Item"), false, () => workspace.SetItemLock(this, true));
+                menu.AddItem(new GUIContent("Lock Group"), false, () => workspace.SetItemLock(this, true));
 
             menu.AddItem(new GUIContent("Delete group"), false, () => workspace.RemoveItem(this));
             menu.AddItem(new GUIContent("Sort contents"), false, () => LayoutContents(workspace));

@@ -7,6 +7,7 @@
 
     public class WorkspaceAsset : WorkspaceItem
     {
+        public override GUIContent ToolbarContent => new(GetPath(), GetIcon());
         public string AssetGuid;
 
         public string GetPath()
