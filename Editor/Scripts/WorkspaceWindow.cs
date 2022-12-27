@@ -569,6 +569,7 @@ namespace Howl.Workspaces
                             item.Position += Event.current.delta;
 
                     dragItem.Position += Event.current.delta;
+                    _activeWorkspace.SetDirty();
                 }
             }
             else if (eventType is EventType.MouseUp)
@@ -600,7 +601,6 @@ namespace Howl.Workspaces
                 }
 
                 _draggingItems = false;
-                _activeWorkspace.SetDirty();
             }
         }
 
