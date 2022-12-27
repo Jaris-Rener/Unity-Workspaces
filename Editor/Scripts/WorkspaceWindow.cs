@@ -56,8 +56,8 @@ namespace Howl.Workspaces
 
         private void OnGUI()
         {
-            if (!_initialized)
-                Initialize();
+            // if (!_initialized)
+            //     Initialize();
 
             GUI.color = _activeWorkspace == null ? Color.grey : Color.white;
             DrawBackground();
@@ -239,6 +239,7 @@ namespace Howl.Workspaces
         private void OnEnable()
         {
             _itemScaleFactor = PlayerPrefs.GetFloat("ItemScaleFactor", _itemScaleFactor);
+            Initialize();
         }
 
         private void DrawControls()
