@@ -373,7 +373,7 @@ namespace Howl.Workspaces
 
         private void NewWorkspace(string workspaceName)
         {
-            if (_activeWorkspace.IsDirty)
+            if (_activeWorkspace is { IsDirty: true })
             {
                 var dialogResult = EditorUtility.DisplayDialogComplex("Save Current Workspace", "Do you want to save the changes you made before switching workspace?", "Save", "Cancel", "No");
                 switch (dialogResult)
